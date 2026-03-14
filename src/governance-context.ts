@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "crypto";
 import { AsyncLocalStorage } from "async_hooks";
-import { GovernanceContextDto } from "./models";
+import { GovernanceContextDto, type AgentContext } from "./models";
 
 export class GovernanceContext {
   readonly traceId: string;
@@ -10,10 +10,13 @@ export class GovernanceContext {
   readonly chainDepth: number;
   readonly aggregateRowsAffected: number;
   aggregateActionCount: number;
-  highestTierInChain: string;
   readonly sessionId: string;
   readonly parentTraceId?: string;
   readonly parentAgentId?: string;
+  /** Set after evaluate when server returns kyraEventId; used for tool-result audit. */
+  lastKyraEventId: string | undefined;
+  /** Optional agent context for audit. */
+  agentContext: AgentContext | undefined;
 
   constructor(params: Partial<GovernanceContext> = {}) {
     this.traceId = params.traceId ?? randomUUID();
@@ -23,10 +26,11 @@ export class GovernanceContext {
     this.chainDepth = params.chainDepth ?? 0;
     this.aggregateRowsAffected = params.aggregateRowsAffected ?? 0;
     this.aggregateActionCount = params.aggregateActionCount ?? 0;
-    this.highestTierInChain = params.highestTierInChain ?? "";
     this.sessionId = params.sessionId ?? randomUUID();
     this.parentTraceId = params.parentTraceId;
     this.parentAgentId = params.parentAgentId;
+    this.lastKyraEventId = params.lastKyraEventId;
+    this.agentContext = params.agentContext;
   }
 
   static fromHumanMessage(message: string, rootAgentId = ""): GovernanceContext {
@@ -38,7 +42,6 @@ export class GovernanceContext {
       originalIntentHash: createHash("sha256").update(intent).digest("hex"),
       sessionId: randomUUID(),
       aggregateActionCount: 0,
-      highestTierInChain: "",
     });
   }
 
@@ -53,7 +56,6 @@ export class GovernanceContext {
       aggregateRowsAffected: parent.aggregateRowsAffected,
       sessionId: parent.sessionId,
       aggregateActionCount: 0,
-      highestTierInChain: "T0",
       parentTraceId: parent.traceId,
       parentAgentId: childAgentId,
     });
@@ -69,7 +71,6 @@ export class GovernanceContext {
       aggregateRowsAffected: this.aggregateRowsAffected,
     };
     if (this.aggregateActionCount !== 0) dto.aggregateActionCount = this.aggregateActionCount;
-    if (this.highestTierInChain) dto.highestTierInChain = this.highestTierInChain;
     if (this.sessionId) dto.sessionId = this.sessionId;
      if (this.parentTraceId) dto.parentTraceId = this.parentTraceId;
      if (this.parentAgentId) dto.parentAgentId = this.parentAgentId;
@@ -101,4 +102,13 @@ export function getContext(): GovernanceContext | undefined {
 
 export function runWithContext<T>(ctx: GovernanceContext, fn: () => T): T {
   return contextStorage.run(ctx, fn);
+}
+
+export function setAgentContext(agentContext: AgentContext | undefined): void {
+  const ctx = contextStorage.getStore();
+  if (ctx) ctx.agentContext = agentContext;
+}
+
+export function getAgentContext(): AgentContext | undefined {
+  return contextStorage.getStore()?.agentContext;
 }

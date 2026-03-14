@@ -34,12 +34,10 @@ export class KyraWrappedTool {
   }
 
   async invoke(input: Record<string, unknown>, config?: any): Promise<any> {
-    const requestedTier = (this.tool as any).requestedTier;
     const { ok, blockReason } = await this.governor._evaluateBeforeCall(
       this.tool.name,
       this.tool.description,
       input,
-      requestedTier,
       this.frameworkWire
     );
     if (!ok) throw new ErrGovernanceBlock(blockReason);
@@ -52,8 +50,11 @@ export class KyraWrappedTool {
         String(result),
         executionTimeMs,
         true,
-        this.governor.Tracer.nextSequence()
+        this.governor.Tracer.nextSequence(),
+        input,
+        start
       );
+      this.governor._emitToolResult(this.tool.name, executionTimeMs, true);
       return result;
     } catch (e) {
       const executionTimeMs = Date.now() - start;
@@ -62,19 +63,20 @@ export class KyraWrappedTool {
         "",
         executionTimeMs,
         false,
-        this.governor.Tracer.nextSequence()
+        this.governor.Tracer.nextSequence(),
+        input,
+        start
       );
+      this.governor._emitToolResult(this.tool.name, executionTimeMs, false, e instanceof Error ? e.message : String(e));
       throw e;
     }
   }
 
   async _call(input: Record<string, unknown>): Promise<string> {
-    const requestedTier = (this.tool as any).requestedTier;
     const { ok, blockReason } = await this.governor._evaluateBeforeCall(
       this.tool.name,
       this.tool.description,
       input,
-      requestedTier,
       this.frameworkWire
     );
     if (!ok) throw new ErrGovernanceBlock(blockReason);
@@ -87,8 +89,11 @@ export class KyraWrappedTool {
         String(result),
         executionTimeMs,
         true,
-        this.governor.Tracer.nextSequence()
+        this.governor.Tracer.nextSequence(),
+        input,
+        start
       );
+      this.governor._emitToolResult(this.tool.name, executionTimeMs, true);
       return result;
     } catch (e) {
       const executionTimeMs = Date.now() - start;
@@ -97,8 +102,11 @@ export class KyraWrappedTool {
         "",
         executionTimeMs,
         false,
-        this.governor.Tracer.nextSequence()
+        this.governor.Tracer.nextSequence(),
+        input,
+        start
       );
+      this.governor._emitToolResult(this.tool.name, executionTimeMs, false, e instanceof Error ? e.message : String(e));
       throw e;
     }
   }

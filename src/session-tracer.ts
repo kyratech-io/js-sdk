@@ -31,6 +31,8 @@ export interface PriorToolResult {
   executionTimeMs?: number;
   success: boolean;
   sequenceNumber: number;
+  parameters?: Record<string, unknown>;
+  timestampEpochMs?: number;
 }
 
 export interface AgentTrace {
@@ -149,7 +151,9 @@ export class SessionTracer {
     output: string,
     executionTimeMs: number,
     success: boolean,
-    sequenceNumber: number
+    sequenceNumber: number,
+    parameters?: Record<string, unknown>,
+    timestampEpochMs?: number
   ): void {
     try {
       const summary =
@@ -157,14 +161,17 @@ export class SessionTracer {
       const outputHash =
         "sha256:" +
         createHash("sha256").update(output).digest("hex");
-      this.toolResults.push({
+      const result: PriorToolResult = {
         toolName,
         outputSummary: summary,
         outputHash,
         executionTimeMs,
         success,
         sequenceNumber,
-      });
+      };
+      if (parameters != null) result.parameters = parameters;
+      if (timestampEpochMs != null) result.timestampEpochMs = timestampEpochMs;
+      this.toolResults.push(result);
       if (this.toolResults.length > MAX_PRIOR_TOOL_RESULTS) {
         this.toolResults = this.toolResults.slice(
           -MAX_PRIOR_TOOL_RESULTS

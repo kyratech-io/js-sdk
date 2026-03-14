@@ -7,7 +7,7 @@ import { ErrGovernanceBlock } from "../models";
  */
 export class GenericWrappedTool {
   constructor(
-    private readonly tool: { name: string; description: string; invoke?: (input: Record<string, unknown>) => Promise<any>; call?: (input: Record<string, unknown>) => Promise<any>; requestedTier?: string },
+    private readonly tool: { name: string; description: string; invoke?: (input: Record<string, unknown>) => Promise<any>; call?: (input: Record<string, unknown>) => Promise<any> },
     private readonly governor: KyraGovernor
   ) {}
 
@@ -22,12 +22,10 @@ export class GenericWrappedTool {
   }
 
   async invoke(input: Record<string, unknown>, _config?: any): Promise<any> {
-    const requestedTier = (this.tool as any).requestedTier;
     const { ok, blockReason } = await this.governor._evaluateBeforeCall(
       this.tool.name,
       this.tool.description,
       input,
-      requestedTier,
       "GENERIC"
     );
     if (!ok) throw new ErrGovernanceBlock(blockReason);
@@ -44,6 +42,7 @@ export class GenericWrappedTool {
         true,
         this.governor.Tracer.nextSequence()
       );
+      this.governor._emitToolResult(this.tool.name, executionTimeMs, true);
       return result;
     } catch (e) {
       const executionTimeMs = Date.now() - start;
@@ -54,6 +53,7 @@ export class GenericWrappedTool {
         false,
         this.governor.Tracer.nextSequence()
       );
+      this.governor._emitToolResult(this.tool.name, executionTimeMs, false, e instanceof Error ? e.message : String(e));
       throw e;
     }
   }

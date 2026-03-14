@@ -1,5 +1,20 @@
 import type { AgentTrace } from "./session-tracer";
 
+/** Agent context for audit; camelCase for wire. */
+export interface AgentContext {
+  [key: string]: unknown;
+}
+
+export function agentContextToWire(ac: AgentContext | undefined): Record<string, unknown> | undefined {
+  if (!ac || typeof ac !== "object") return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(ac)) {
+    const camel = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    out[camel] = v;
+  }
+  return out;
+}
+
 // Wire format — field names must match Java server DTOs exactly
 export interface GovernanceContextDto {
   traceId: string;
@@ -9,7 +24,6 @@ export interface GovernanceContextDto {
   chainDepth: number;
   aggregateRowsAffected: number;
   aggregateActionCount?: number;
-  highestTierInChain?: string;
   sessionId?: string;
   parentTraceId?: string;
   parentAgentId?: string;
@@ -26,8 +40,10 @@ export interface ActionRequestPayload {
   sdkVersion: string;
   promptHash?: string;
   agentTrace?: AgentTrace;
-  requestedTier?: string; // floor hint; server uses max(llmClassified, requested)
-  mode?: string; // ENFORCE | SHADOW — request server to use this mode
+  mode?: string;
+  sessionId?: string;
+  traceId?: string; // user-provided or from context; undefined = server generates
+  agentContext?: Record<string, unknown>;
 }
 
 export interface GateResultDto {
@@ -50,7 +66,8 @@ export interface EvaluationDecision {
   escalationId?: string;
   evaluationMs: number;
   gateResults: GateResultDto[];
-  source?: "FAIL_OPEN"; // set when server unreachable + failOpen=true
+  source?: "FAIL_OPEN";
+  kyraEventId?: string;
 }
 
 export interface EscalationStatus {

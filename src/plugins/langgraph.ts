@@ -25,7 +25,6 @@ export class KyraToolNode {
           toolCall.name ?? "",
           "",
           toolCall.args ?? {},
-          undefined,
           "LANGGRAPH"
         );
         if (!ok) throw new ErrGovernanceBlock(blockReason);
@@ -41,10 +40,10 @@ export class KyraToolNode {
     } else {
       result = state;
     }
-    // Hook 4: record each tool result for agentTrace
+    // Record each tool result for agentTrace and emit tool-result audit (one per tool; shared lastKyraEventId in batch)
     try {
-      const messages = result?.messages ?? [];
-      for (const msg of messages) {
+      const resultMessages = result?.messages ?? [];
+      for (const msg of resultMessages) {
         const name = (msg as any)?.name;
         const content = (msg as any)?.content ?? "";
         if (typeof name === "string" && name) {
@@ -55,6 +54,7 @@ export class KyraToolNode {
             true,
             this.governor.Tracer.nextSequence()
           );
+          this.governor._emitToolResult(name, 0, true);
         }
       }
     } catch {

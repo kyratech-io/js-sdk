@@ -1,6 +1,6 @@
 export { KyraGovernor, normalizeFramework } from "./governor";
 export type { KyraGovernorConfig, WrapFramework } from "./governor";
-export { GovernanceContext, getContext, runWithContext } from "./governance-context";
+export { GovernanceContext, getContext, runWithContext, setAgentContext, getAgentContext } from "./governance-context";
 export {
   KyraException,
   KyraBlockedException,
@@ -15,6 +15,7 @@ export type {
   ToolDefinition,
   AgentRegistrationRequest,
   AgentRegistrationResponse,
+  AgentContext,
 } from "./models";
 export { KyraLangChainCallback } from "./plugins/langchain";
 export { KyraToolNode } from "./plugins/langgraph";

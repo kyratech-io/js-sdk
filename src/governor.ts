@@ -1,5 +1,4 @@
 import { createHash } from "crypto";
-import { GovernanceContext, getContext } from "./governance-context";
 import {
   EvaluationDecision,
   ActionRequestPayload,
@@ -9,7 +8,13 @@ import {
   ToolDefinition,
   KyraServerUnavailableException,
   PolicyDocument,
+  agentContextToWire,
+  type AgentContext,
 } from "./models";
+import { GovernanceContext, getContext, runWithContext } from "./governance-context";
+import { configure as auditConfigure, getAuditQueue } from "./audit/auditQueue";
+import { LLM_PROVIDER_PATTERNS } from "./audit/llmClassifier";
+import { configureEndpoints as configureFetchEndpoints } from "./core/fetch-interceptor";
 import { KyraWrappedTool } from "./core/kyra-wrapped-tool";
 import { GenericWrappedTool } from "./core/generic-wrapped-tool";
 import { KyraToolNode } from "./plugins/langgraph";
@@ -33,20 +38,17 @@ export function normalizeFramework(f: WrapFramework | string): string {
   return FRAMEWORK_WIRE[key] ?? (key ? key.toUpperCase().replace(/-/g, "_") : "");
 }
 
-function tierOrder(tier: string): number {
-  const order: Record<string, number> = { T0: 0, T1: 1, T2: 2, T3: 3, T4: 4 };
-  return order[tier] ?? -1;
-}
-
 export interface KyraGovernorConfig {
   apiKey: string;
   serverUrl?: string;
   timeoutMs?: number;
   failOpen?: boolean;
-  mode?: string; // "enforce" | "shadow" — sent to server as ENFORCE | SHADOW
+  mode?: string;
   agentId?: string;
   sessionIntent?: string;
   framework?: string;
+  additionalLlmEndpoints?: string[];
+  memoryEndpoints?: string[];
 }
 
 export class KyraGovernor {
@@ -59,15 +61,21 @@ export class KyraGovernor {
 
   constructor(config: KyraGovernorConfig) {
     this.config = {
-      serverUrl: "https://api.kyra.dev",
+      serverUrl: "https://api.kyratech.io",
       timeoutMs: 5000,
       failOpen: true,
       mode: "",
       agentId: "",
       sessionIntent: "",
       framework: "LANGCHAIN_JS",
+      additionalLlmEndpoints: [],
+      memoryEndpoints: [],
       ...config,
     };
+    auditConfigure(this.config.serverUrl);
+    getAuditQueue(); // ensure queue exists
+    const llmEndpoints = [...LLM_PROVIDER_PATTERNS, ...(this.config.additionalLlmEndpoints ?? [])];
+    configureFetchEndpoints(llmEndpoints, this.config.memoryEndpoints);
     this._startEscalationPoller();
   }
 
@@ -153,27 +161,30 @@ export class KyraGovernor {
     return response.agentId;
   }
 
-  /** Returns { ok: true, blockReason: "" } for ALLOW; { ok: false, blockReason } for BLOCK/ESCALATE/server error. ESCALATE fires async POST to /v1/escalations. */
+  /** Returns { ok: true, blockReason: "" } for ALLOW; { ok: false, blockReason } for BLOCK/ESCALATE/server error. agentContext: optional override for this call; when omitted, uses context from setAgentContext/getContext(). traceId: optional; user-provided or from context; if not set, server generates. */
   async evaluate(
     toolName: string,
     toolDescription: string,
     parameters: Record<string, unknown>,
-    requestedTier?: string,
-    frameworkOverride?: WrapFramework | string
+    frameworkOverride?: WrapFramework | string,
+    agentContext?: AgentContext,
+    traceId?: string
   ): Promise<{ ok: boolean; blockReason: string }> {
-    return this._evaluateBeforeCall(toolName, toolDescription, parameters, requestedTier, frameworkOverride);
+    return this._evaluateBeforeCall(toolName, toolDescription, parameters, frameworkOverride, agentContext, traceId);
   }
 
-  /** Single internal evaluation path — all framework adapters call this. */
+  /** Single internal evaluation path — all framework adapters call this. agentContext: optional override; when omitted, uses ctx.agentContext from getContext(). traceId: optional; when omitted, uses ctx.traceId or server generates. */
   async _evaluateBeforeCall(
     toolName: string,
     toolDescription: string,
     parameters: Record<string, unknown>,
-    requestedTier?: string,
-    frameworkOverride?: WrapFramework | string
+    frameworkOverride?: WrapFramework | string,
+    agentContextOverride?: AgentContext,
+    traceId?: string
   ): Promise<{ ok: boolean; blockReason: string }> {
     const ctx = getContext();
     const framework = frameworkOverride ? normalizeFramework(frameworkOverride as WrapFramework) : this.config.framework;
+    const agentContext = agentContextOverride ?? ctx?.agentContext;
     const payload: ActionRequestPayload = {
       toolName,
       toolDescription,
@@ -184,7 +195,9 @@ export class KyraGovernor {
       framework,
       sdkVersion: SDK_VERSION,
       ...(this.promptHash && { promptHash: this.promptHash }),
-      ...(requestedTier && { requestedTier }),
+      ...(ctx?.sessionId && { sessionId: ctx.sessionId }),
+      ...((traceId ?? ctx?.traceId) && { traceId: traceId ?? ctx?.traceId }),
+      ...(agentContext && { agentContext: agentContextToWire(agentContext) }),
     };
     const mode = this._normalizeMode(this.config.mode);
     if (mode) payload.mode = mode;
@@ -201,17 +214,61 @@ export class KyraGovernor {
       return { ok: false, blockReason: e?.message ?? "server error" };
     }
 
+    if (ctx && decision.kyraEventId) ctx.lastKyraEventId = decision.kyraEventId;
     const { ok, blockReason } = this._handleDecision(decision);
     if (!ok && decision.outcome === "ESCALATE" && decision.escalationId) {
-      this._postEscalationAsync(toolName, toolDescription, parameters, requestedTier ?? "", decision);
+      this._postEscalationAsync(toolName, toolDescription, parameters, "", decision);
     }
     if (ok && ctx) {
       ctx.aggregateActionCount += 1;
-      if (decision.tier && tierOrder(decision.tier) > tierOrder(ctx.highestTierInChain)) {
-        ctx.highestTierInChain = decision.tier;
-      }
     }
     return { ok, blockReason };
+  }
+
+  _emitSessionEvent(eventType: string, sessionId: string): void {
+    try {
+      getAuditQueue().enqueueSessionEvent({
+        agentId: this.config.agentId || null,
+        sessionId,
+        eventType,
+        sdkVersion: SDK_VERSION,
+        framework: this.config.framework,
+        mode: this._normalizeMode(this.config.mode) || undefined,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  _emitToolResult(toolName: string, executionTimeMs: number, success: boolean, errorMessage?: string): void {
+    const ctx = getContext();
+    if (!ctx?.lastKyraEventId) return;
+    try {
+      getAuditQueue().enqueueToolResult({
+        agentId: ctx.rootAgentId ?? null,
+        sessionId: ctx.sessionId ?? null,
+        kyraEventId: ctx.lastKyraEventId,
+        toolName,
+        status: success ? "SUCCESS" : "FAILURE",
+        durationMs: executionTimeMs,
+        ...(errorMessage && { errorMessage }),
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Run fn with a governance context that has the given sessionId and emit SESSION_STARTED / SESSION_COMPLETED.
+   */
+  async withSession<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const ctx = new GovernanceContext({ sessionId });
+    this._emitSessionEvent("SESSION_STARTED", sessionId);
+    try {
+      return await runWithContext(ctx, () => fn());
+    } finally {
+      this._emitSessionEvent("SESSION_COMPLETED", sessionId);
+    }
   }
 
   private _postEscalationAsync(
